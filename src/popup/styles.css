@@ -1429,38 +1429,43 @@ body {
 }
 
 .mapping-prompt-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 10px;
+}
+
+.mapping-close-btn {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 4px;
+    line-height: 1;
+    border-radius: 4px;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.mapping-close-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--fill-faint);
 }
 
 .mapping-prompt-text {
     font-size: 13px;
     color: var(--text-primary);
     line-height: 1.4;
+    padding-right: 22px;
 }
 
 .mapping-prompt-actions {
     display: flex;
     gap: 8px;
     justify-content: flex-end;
-}
-
-.mapping-btn-secondary {
-    padding: 6px 12px;
-    font-size: 12px;
-    font-weight: 500;
-    background-color: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--stroke);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.15s, color 0.15s;
-}
-
-.mapping-btn-secondary:hover {
-    background-color: var(--fill-faint);
-    color: var(--text-primary);
 }
 
 .mapping-btn-primary {

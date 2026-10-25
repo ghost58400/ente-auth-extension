@@ -1365,20 +1365,21 @@ export const App: React.FC = () => {
                         </div>
                     ) : (
                         <div className="mapping-prompt-card">
+                            <button
+                                className="mapping-close-btn"
+                                onClick={() => {
+                                    setMappingPrompt(null);
+                                    setPendingSearch(null);
+                                    sendMessage({ type: "CLEAR_PENDING_SEARCH" });
+                                }}
+                                title="Dismiss"
+                            >
+                                ✕
+                            </button>
                             <div className="mapping-prompt-text">
                                 Remember <strong>{mappingPrompt.issuer}</strong> for <strong>{mappingPrompt.domain}</strong>?
                             </div>
                             <div className="mapping-prompt-actions">
-                                <button
-                                    className="mapping-btn-secondary"
-                                    onClick={() => {
-                                        setMappingPrompt(null);
-                                        setPendingSearch(null);
-                                        sendMessage({ type: "CLEAR_PENDING_SEARCH" });
-                                    }}
-                                >
-                                    Dismiss
-                                </button>
                                 <button
                                     className="mapping-btn-primary"
                                     onClick={async () => {
