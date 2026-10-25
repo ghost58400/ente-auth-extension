@@ -2,11 +2,11 @@
  * Extension popup main application component.
  */
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import { browser, sendMessage, openOptionsPage } from "@shared/browser";
-import { searchCodes } from "@shared/domain-matcher";
+import { browser, sendMessage, openOptionsPage, getCurrentTab } from "@shared/browser";
+import { searchCodes, matchCodesToDomain, setCustomMappings } from "@shared/domain-matcher";
 import { generateOTPs } from "@shared/otp";
 import { useTheme } from "@shared/useTheme";
-import type { AuthState, Code, CodeFormData, ParsedQRCode, PendingSearchContext } from "@shared/types";
+import type { AuthState, Code, CodeFormData, CustomDomainMapping, ParsedQRCode, PendingSearchContext } from "@shared/types";
 import { CodeCard } from "./CodeCard";
 import { CodeForm } from "./CodeForm";
 
@@ -89,9 +89,30 @@ export const App: React.FC = () => {
     const [canScrollLeft, setCanScrollLeft] = useState(false);
     const [canScrollRight, setCanScrollRight] = useState(false);
     const [pendingSearch, setPendingSearch] = useState<PendingSearchContext | null>(null);
+    const [activeTabContext, setActiveTabContext] = useState<{ tabId: number; domain: string } | null>(null);
     const [mappingPrompt, setMappingPrompt] = useState<{ domain: string; issuer: string } | null>(null);
     const [mappingSaved, setMappingSaved] = useState(false);
+    const customMappingsRef = useRef<CustomDomainMapping[]>([]);
     const tagFilterRef = useRef<HTMLDivElement>(null);
+
+    // Keep custom mappings in sync with storage in real time
+    useEffect(() => {
+        const handleStorageChanged = (
+            changes: Record<string, { oldValue?: unknown; newValue?: unknown }>,
+            areaName: string
+        ) => {
+            if (areaName === "local" && changes.customDomainMappings) {
+                const newMappings = (changes.customDomainMappings.newValue as CustomDomainMapping[] | undefined) ?? [];
+                customMappingsRef.current = newMappings;
+                setCustomMappings(newMappings);
+            }
+        };
+
+        browser.storage.onChanged.addListener(handleStorageChanged);
+        return () => {
+            browser.storage.onChanged.removeListener(handleStorageChanged);
+        };
+    }, []);
 
     // Check if tag filter bar can scroll
     const checkTagScroll = useCallback(() => {
@@ -128,6 +149,36 @@ export const App: React.FC = () => {
             }>({ type: "GET_SETTINGS" });
             if (settingsRes.success && settingsRes.data?.sortOrder) {
                 setSortOrder(settingsRes.data.sortOrder);
+            }
+
+            // Detect active tab domain for universal 1-click autofill and domain linking
+            try {
+                const tab = await getCurrentTab();
+                if (tab && tab.id !== undefined && tab.url) {
+                    const parsed = new URL(tab.url);
+                    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+                        setActiveTabContext({
+                            tabId: tab.id,
+                            domain: parsed.hostname,
+                        });
+                    }
+                }
+            } catch (e) {
+                console.debug("[Duckey] Could not query active tab:", e);
+            }
+
+            // Load custom mappings to ensure domain matcher has them in memory
+            try {
+                const mappingsRes = await sendMessage<{
+                    success: boolean;
+                    data?: CustomDomainMapping[];
+                }>({ type: "GET_CUSTOM_MAPPINGS" });
+                if (mappingsRes.success && mappingsRes.data) {
+                    customMappingsRef.current = mappingsRes.data;
+                    setCustomMappings(mappingsRes.data);
+                }
+            } catch (e) {
+                console.debug("[Duckey] Could not load custom mappings:", e);
             }
 
             // Check for pending search requested from in-page autofill dropdown
@@ -371,21 +422,38 @@ export const App: React.FC = () => {
 
     // Handle code selection/click from code card
     const handleCodeSelect = async (code: Code, currentOtp: string) => {
-        if (pendingSearch && pendingSearch.tabId !== null) {
+        const targetContext = pendingSearch || activeTabContext;
+        if (targetContext && targetContext.tabId !== null) {
+            let filled = false;
             try {
-                await browser.tabs.sendMessage(pendingSearch.tabId, {
+                const fillRes = await browser.tabs.sendMessage(targetContext.tabId, {
                     type: "FILL_OTP",
                     code: currentOtp,
-                });
+                }) as { success?: boolean } | undefined;
+                if (fillRes && fillRes.success) {
+                    filled = true;
+                }
             } catch (e) {
-                console.warn("[Duckey] Failed to fill OTP into tab:", e);
+                console.debug("[Duckey] Could not fill OTP into tab:", e);
             }
 
-            if (pendingSearch.domain) {
-                setMappingPrompt({
-                    domain: pendingSearch.domain,
-                    issuer: code.issuer,
-                });
+            if (targetContext.domain) {
+                // Check if this domain is already recognized for this code
+                const matches = matchCodesToDomain(codes, targetContext.domain);
+                const isAlreadyMatched = matches.some((m) => m.code.id === code.id);
+
+                // Offer to save mapping if it was not already recognized,
+                // and either the field was successfully filled or search was explicitly requested
+                if (!isAlreadyMatched && (filled || pendingSearch !== null)) {
+                    setMappingSaved(false);
+                    setMappingPrompt({
+                        domain: targetContext.domain,
+                        issuer: code.issuer || code.account || targetContext.domain,
+                    });
+                } else if (pendingSearch) {
+                    setPendingSearch(null);
+                    sendMessage({ type: "CLEAR_PENDING_SEARCH" });
+                }
             }
         }
     };
@@ -1331,13 +1399,34 @@ export const App: React.FC = () => {
                                     className="mapping-btn-primary"
                                     onClick={async () => {
                                         try {
-                                            await sendMessage({
+                                            const res = await sendMessage<{ success: boolean; error?: string }>({
                                                 type: "ADD_CUSTOM_MAPPING",
                                                 mapping: {
                                                     domain: mappingPrompt.domain,
                                                     issuer: mappingPrompt.issuer,
                                                 },
                                             });
+                                            if (res && res.success === false) {
+                                                console.error("Failed to add mapping:", res.error);
+                                                setMappingPrompt(null);
+                                                return;
+                                            }
+
+                                            // Update in-memory mapping list
+                                            const newMapping: CustomDomainMapping = {
+                                                domain: mappingPrompt.domain,
+                                                issuer: mappingPrompt.issuer,
+                                                createdAt: Date.now(),
+                                            };
+                                            const updated = [
+                                                ...customMappingsRef.current.filter(
+                                                    (m) => m.domain.toLowerCase() !== mappingPrompt.domain.toLowerCase()
+                                                ),
+                                                newMapping,
+                                            ];
+                                            customMappingsRef.current = updated;
+                                            setCustomMappings(updated);
+
                                             setMappingSaved(true);
                                             setTimeout(() => {
                                                 setMappingPrompt(null);

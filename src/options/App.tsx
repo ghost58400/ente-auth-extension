@@ -92,6 +92,30 @@ export const App: React.FC = () => {
         loadData();
     }, []);
 
+    // Listen for storage changes to refresh custom mappings and settings in real time
+    useEffect(() => {
+        const handleStorageChanged = (
+            changes: Record<string, { oldValue?: unknown; newValue?: unknown }>,
+            areaName: string
+        ) => {
+            if (areaName === "local") {
+                if (changes.customDomainMappings) {
+                    const newMappings = changes.customDomainMappings.newValue as CustomDomainMapping[] | undefined;
+                    setCustomMappings(newMappings ?? []);
+                }
+                if (changes.settings) {
+                    const newSettings = changes.settings.newValue as ExtensionSettings | undefined;
+                    if (newSettings) setSettings(newSettings);
+                }
+            }
+        };
+
+        browser.storage.onChanged.addListener(handleStorageChanged);
+        return () => {
+            browser.storage.onChanged.removeListener(handleStorageChanged);
+        };
+    }, []);
+
     // Handle logout
     const handleLogout = async () => {
         setLoggingOut(true);
