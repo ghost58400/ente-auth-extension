@@ -1096,22 +1096,6 @@ export const App: React.FC = () => {
                 </div>
             )}
 
-            {pendingSearch && (
-                <div className="search-context-badge">
-                    <span>Filling for <strong>{pendingSearch.domain}</strong></span>
-                    <button
-                        className="badge-close-btn"
-                        onClick={() => {
-                            setPendingSearch(null);
-                            sendMessage({ type: "CLEAR_PENDING_SEARCH" });
-                        }}
-                        title="Dismiss autofill context"
-                    >
-                        ✕
-                    </button>
-                </div>
-            )}
-
             {/* Tag filter bar */}
             {allTags.length > 0 && (
                 <div className="tag-filter-container">
@@ -1393,7 +1377,7 @@ export const App: React.FC = () => {
                                         sendMessage({ type: "CLEAR_PENDING_SEARCH" });
                                     }}
                                 >
-                                    Just fill
+                                    Dismiss
                                 </button>
                                 <button
                                     className="mapping-btn-primary"
@@ -1439,7 +1423,7 @@ export const App: React.FC = () => {
                                         }
                                     }}
                                 >
-                                    Remember & fill
+                                    Remember
                                 </button>
                             </div>
                         </div>
