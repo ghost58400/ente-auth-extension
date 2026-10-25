@@ -8,7 +8,9 @@ import { resolveAccentColor } from "@shared/accent";
 import { updateToolbarIcon } from "@shared/icon";
 import { matchCodesToDomain, setCustomMappings } from "@shared/domain-matcher";
 import { setApiBaseUrl } from "@shared/api";
+import { generateOTPs, getRemainingSeconds, getProgress } from "@shared/otp";
 import type {
+    AutofillMatch,
     ExtensionMessage,
     ExtensionResponse,
 } from "@shared/types";
@@ -28,6 +30,22 @@ const AUTH_CHANGING_MESSAGES = new Set<string>([
     "UNLOCK_WITH_PIN",
     "LOCK",
     "LOGOUT",
+]);
+
+// Messages that can only be called from privileged extension contexts
+// (popup, options page, login tab) and must NOT be accessible to content scripts.
+const SENSITIVE_MESSAGE_TYPES = new Set<string>([
+    "GET_CODES",
+    "SET_SETTINGS",
+    "CREATE_CODE",
+    "UPDATE_CODE",
+    "DELETE_CODE",
+    "LOGIN",
+    "LOGIN_COMPLETE",
+    "SET_PIN",
+    "REMOVE_PIN",
+    "LOGOUT",
+    "SCAN_QR_FROM_PAGE",
 ]);
 
 /**
@@ -114,16 +132,35 @@ const init = async () => {
 };
 
 /**
+ * Validate that a message sender is a privileged extension page
+ * (popup, options, login page with sender.tab === undefined or extension page URL).
+ */
+const isPrivilegedSender = (sender: Browser.Runtime.MessageSender): boolean => {
+    if (sender.id !== browser.runtime.id) {
+        return false;
+    }
+    // Extension toolbar popup or background: sender.tab is undefined
+    if (sender.tab === undefined) {
+        return true;
+    }
+    // Extension pages in tabs (options, login): URL starts with extension scheme
+    if (
+        sender.url?.startsWith("chrome-extension://") ||
+        sender.url?.startsWith("moz-extension://")
+    ) {
+        return true;
+    }
+    return false;
+};
+
+/**
  * Validate that a message sender is from a trusted extension context.
  */
 const isValidSender = (sender: Browser.Runtime.MessageSender): boolean => {
     // Allow messages from extension pages (popup, options, login, background)
     if (sender.id === browser.runtime.id) {
-        // Extension's own pages are always trusted
-        // Note: In Firefox, sender.url uses a UUID different from browser.runtime.id,
-        // so we just check for the extension protocol prefix
-        if (sender.url?.startsWith("chrome-extension://") ||
-            sender.url?.startsWith("moz-extension://")) {
+        // Privileged extension pages
+        if (isPrivilegedSender(sender)) {
             return true;
         }
         // Messages from content scripts on other domains (for autofill)
@@ -145,6 +182,12 @@ const handleMessage = async (
     // Validate sender before processing any message
     if (!isValidSender(sender)) {
         console.warn("Rejected message from untrusted sender:", sender.url);
+        return { success: false, error: "Unauthorized" };
+    }
+
+    // Deny content scripts from calling sensitive messages
+    if (SENSITIVE_MESSAGE_TYPES.has(message.type) && !isPrivilegedSender(sender)) {
+        console.warn(`Denied sensitive message ${message.type} from unprivileged sender:`, sender.url);
         return { success: false, error: "Unauthorized" };
     }
 
@@ -241,12 +284,47 @@ const handleMessage = async (
 
         case "GET_CODES_FOR_DOMAIN": {
             const authState = await getAuthState();
+
+            // Derive domain from sender tab URL rather than blindly trusting message.domain
+            let domain = "";
+            const rawUrl = sender.tab?.url || sender.url;
+            if (rawUrl) {
+                try {
+                    domain = new URL(rawUrl).hostname;
+                } catch {
+                    domain = "";
+                }
+            }
+            // Allow privileged extension pages to specify domain explicitly
+            if (!domain && isPrivilegedSender(sender)) {
+                domain = message.domain || "";
+            }
+
+            if (!domain) {
+                return { success: false, error: "Invalid domain" };
+            }
+
             const codes = await getCodes();
             // Load and set custom mappings before matching
             const customMappings = await customMappingsStorage.getMappings();
             setCustomMappings(customMappings);
-            const matches = matchCodesToDomain(codes, message.domain);
+            const domainMatches = matchCodesToDomain(codes, domain);
             const timeOffset = await getTimeOffset();
+
+            // Return stripped match objects containing only the data necessary for autofill
+            const matches: AutofillMatch[] = domainMatches.map(({ code }) => {
+                const [otp] = generateOTPs(code, timeOffset);
+                return {
+                    id: code.id,
+                    issuer: code.issuer,
+                    account: code.account,
+                    otp,
+                    timeRemaining: getRemainingSeconds(code, timeOffset),
+                    period: code.period,
+                    progress: getProgress(code, timeOffset),
+                };
+            });
+
             return { success: true, data: { matches, timeOffset, authState } };
         }
 

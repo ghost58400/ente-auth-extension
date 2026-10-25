@@ -153,7 +153,7 @@ export interface ParsedQRCode {
  */
 export type ExtensionMessage =
     | { type: "GET_CODES"; forceSync?: boolean }
-    | { type: "GET_CODES_FOR_DOMAIN"; domain: string }
+    | { type: "GET_CODES_FOR_DOMAIN"; domain?: string }
     | { type: "SYNC_CODES" }
     | { type: "LOGIN"; token: string; keyAttributes: KeyAttributes }
     | { type: "LOGIN_COMPLETE"; token: string; email: string; keyAttributes: KeyAttributes; masterKey: string }
@@ -238,6 +238,33 @@ export interface DomainMatch {
     code: Code;
     confidence: number;
 }
+
+/**
+ * Stripped, safe representation of a domain match for content script autofill.
+ * Contains only the data necessary to render the inline UI and fill the OTP.
+ * Never exposes raw TOTP secrets or uriStrings to webpage renderer processes.
+ */
+export interface AutofillMatch {
+    /** Code ID for tracking/identification */
+    id: string;
+    /** The name of the entity that issued this code */
+    issuer: string;
+    /** The user's account or email for which this code is used */
+    account?: string;
+    /** The current generated OTP code */
+    otp: string;
+    /** Seconds remaining until current OTP expires */
+    timeRemaining: number;
+    /** Validity period of OTP in seconds (typically 30) */
+    period: number;
+    /** Current progress through the period (0.0 to 1.0) */
+    progress: number;
+}
+
+/**
+ * Alias for AutofillMatch.
+ */
+export type SafeDomainMatch = AutofillMatch;
 
 /**
  * Custom domain mapping created by the user.

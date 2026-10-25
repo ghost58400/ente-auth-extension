@@ -4,7 +4,7 @@
  */
 import type Browser from "webextension-polyfill";
 import { browser, sendMessage } from "@shared/browser";
-import type { AuthState, DomainMatch, ExtensionSettings, MFAFieldDetection } from "@shared/types";
+import type { AuthState, AutofillMatch, ExtensionSettings, MFAFieldDetection } from "@shared/types";
 import { fillCode } from "./autofill";
 import { getBestMFAField } from "./detector";
 import { hidePopup, showPopup } from "./popup";
@@ -95,7 +95,7 @@ const renderIconForCurrentDetection = async (): Promise<void> => {
 
         const response = await sendMessageWithRetry<{
             success: boolean;
-            data?: { matches: DomainMatch[]; timeOffset: number; authState?: AuthState };
+            data?: { matches: AutofillMatch[]; timeOffset: number; authState?: AuthState };
             error?: string;
         }>({
             type: "GET_CODES_FOR_DOMAIN",

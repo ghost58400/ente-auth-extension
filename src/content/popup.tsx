@@ -3,14 +3,13 @@
  * Appears inside the MFA input field like LastPass.
  * Renders in a Shadow DOM for style isolation.
  */
-import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { generateOTPs, getProgress } from "@shared/otp";
 import { prettyFormatCode } from "@shared/code";
 import { ACCENT_COLORS, getResolvedAccentColor, getResolvedTheme } from "@shared/useTheme";
 import { renderDuckeyIconDataUrl } from "@shared/icon";
 import { browser, sendMessage } from "@shared/browser";
-import type { AuthState, Code, DomainMatch } from "@shared/types";
+import type { AuthState, AutofillMatch } from "@shared/types";
 
 type ResolvedTheme = "light" | "dark";
 
@@ -36,10 +35,10 @@ const themeColors = {
     },
 };
 
-type DropdownView = "matches" | "search" | "confirm";
+type DropdownView = "matches" | "search";
 
 interface DropdownProps {
-    matches: DomainMatch[];
+    matches: AutofillMatch[];
     timeOffset: number;
     onFill: (code: string) => void;
     onClose: () => void;
@@ -55,75 +54,51 @@ const Dropdown: React.FC<DropdownProps> = ({
     onClose,
     theme,
     accentColor,
-    domain,
 }) => {
-    const [otps, setOtps] = useState<Map<string, string>>(new Map());
-    const [progress, setProgress] = useState<Map<string, number>>(new Map());
+    const [currentMatches, setCurrentMatches] = useState<AutofillMatch[]>(matches);
+    const [progressMap, setProgressMap] = useState<Map<string, number>>(new Map());
     const [view, setView] = useState<DropdownView>("matches");
-    const [allCodes, setAllCodes] = useState<Code[]>([]);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [selectedCode, setSelectedCode] = useState<Code | null>(null);
-    const [saving, setSaving] = useState(false);
-    const [saved, setSaved] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
-    const searchInputRef = useRef<HTMLInputElement>(null);
 
-    // Load all codes when switching to search view
     useEffect(() => {
-        if (view === "search" && allCodes.length === 0) {
-            sendMessage<{ success: boolean; data?: { codes: Code[] } }>({
-                type: "GET_CODES",
-            }).then((response) => {
-                if (response?.success && response.data?.codes) {
-                    setAllCodes(response.data.codes);
+        setCurrentMatches(matches);
+    }, [matches]);
+
+    // Update progress bars every second and re-fetch OTPs when period expires
+    useEffect(() => {
+        const updateProgress = () => {
+            const newProgress = new Map<string, number>();
+            let needsRefresh = false;
+
+            currentMatches.forEach((match) => {
+                const periodMs = (match.period || 30) * 1000;
+                const timestamp = Date.now() + timeOffset;
+                const elapsedMs = timestamp % periodMs;
+                const timeRemaining = Math.floor((periodMs - elapsedMs) / 1000);
+                newProgress.set(match.id, (periodMs - elapsedMs) / periodMs);
+                if (timeRemaining === 0) {
+                    needsRefresh = true;
                 }
             });
-        }
-    }, [view, allCodes.length]);
 
-    // Focus search input when entering search view
-    useEffect(() => {
-        if (view === "search" && searchInputRef.current) {
-            setTimeout(() => searchInputRef.current?.focus(), 100);
-        }
-    }, [view]);
+            setProgressMap(newProgress);
 
-    // Get codes to display based on view (memoized to prevent infinite re-renders)
-    const displayCodes = useMemo(() => {
-        if (view === "matches") {
-            return matches.map((m) => m.code);
-        }
-        return allCodes.filter((code) => {
-            if (!searchQuery.trim()) return true;
-            const query = searchQuery.toLowerCase();
-            return (
-                code.issuer.toLowerCase().includes(query) ||
-                code.account?.toLowerCase().includes(query)
-            );
-        });
-    }, [view, matches, allCodes, searchQuery]);
-
-    // Update OTPs every second
-    useEffect(() => {
-        const updateOtps = () => {
-            const newOtps = new Map<string, string>();
-            const newProgress = new Map<string, number>();
-
-            displayCodes.forEach((code) => {
-                const [otp] = generateOTPs(code, timeOffset);
-                newOtps.set(code.id, otp);
-                newProgress.set(code.id, getProgress(code, timeOffset));
-            });
-
-            setOtps(newOtps);
-            setProgress(newProgress);
+            if (needsRefresh) {
+                sendMessage<{ success: boolean; data?: { matches: AutofillMatch[] } }>({
+                    type: "GET_CODES_FOR_DOMAIN",
+                }).then((res) => {
+                    if (res?.success && res.data?.matches) {
+                        setCurrentMatches(res.data.matches);
+                    }
+                }).catch(() => {});
+            }
         };
 
-        updateOtps();
-        const interval = setInterval(updateOtps, 1000);
+        updateProgress();
+        const interval = setInterval(updateProgress, 1000);
 
         return () => clearInterval(interval);
-    }, [displayCodes, timeOffset]);
+    }, [currentMatches, timeOffset]);
 
     // Close on outside click
     useEffect(() => {
@@ -142,49 +117,6 @@ const Dropdown: React.FC<DropdownProps> = ({
             document.removeEventListener("mousedown", handleClickOutside, false);
         };
     }, [onClose]);
-
-    // Handle code selection from search
-    const handleSelectCode = useCallback((code: Code) => {
-        const otp = otps.get(code.id) || "";
-        // If user was in search view (no matches), offer to save mapping
-        if (matches.length === 0) {
-            setSelectedCode(code);
-            setView("confirm");
-        } else {
-            onFill(otp);
-        }
-    }, [matches.length, onFill, otps]);
-
-    // Handle confirming the fill (with or without saving mapping)
-    const handleConfirmFill = useCallback(async (saveMapping: boolean) => {
-        if (!selectedCode) return;
-
-        const otp = otps.get(selectedCode.id) || generateOTPs(selectedCode, timeOffset)[0];
-
-        if (saveMapping) {
-            setSaving(true);
-            try {
-                await sendMessage({
-                    type: "ADD_CUSTOM_MAPPING",
-                    mapping: {
-                        domain,
-                        issuer: selectedCode.issuer,
-                    },
-                });
-                setSaved(true);
-                setTimeout(() => {
-                    onFill(otp);
-                }, 500);
-            } catch (e) {
-                console.error("Failed to save mapping:", e);
-                onFill(otp);
-            } finally {
-                setSaving(false);
-            }
-        } else {
-            onFill(otp);
-        }
-    }, [selectedCode, otps, timeOffset, domain, onFill]);
 
     const colors = { ...themeColors[theme], accent: accentColor };
 
@@ -228,20 +160,35 @@ const Dropdown: React.FC<DropdownProps> = ({
             justifyContent: "center",
             color: colors.textMuted,
         },
-        searchContainer: {
-            padding: "8px 16px",
-            borderBottom: `1px solid ${colors.stroke}`,
+        infoContainer: {
+            padding: "16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
         },
-        searchInput: {
-            width: "100%",
-            padding: "8px 12px",
+        infoTitle: {
             fontSize: "14px",
-            border: `1px solid ${colors.stroke}`,
-            borderRadius: "6px",
-            backgroundColor: colors.background,
+            fontWeight: 600,
             color: colors.textPrimary,
-            outline: "none",
-            boxSizing: "border-box",
+            margin: 0,
+        },
+        infoText: {
+            fontSize: "13px",
+            color: colors.textMuted,
+            lineHeight: 1.5,
+            margin: 0,
+        },
+        gotItButton: {
+            width: "100%",
+            padding: "10px 16px",
+            fontSize: "14px",
+            fontWeight: 600,
+            color: "#FFFFFF",
+            backgroundColor: colors.accent,
+            border: "none",
+            borderRadius: "6px",
+            cursor: "pointer",
+            marginTop: "4px",
         },
         list: {
             maxHeight: "280px",
@@ -326,83 +273,10 @@ const Dropdown: React.FC<DropdownProps> = ({
             cursor: "pointer",
             textAlign: "center",
         },
-        confirmContainer: {
-            padding: "16px",
-        },
-        confirmText: {
-            fontSize: "14px",
-            color: colors.textPrimary,
-            marginBottom: "12px",
-            lineHeight: 1.5,
-        },
-        confirmDomain: {
-            fontWeight: 600,
-            color: colors.accent,
-        },
-        confirmIssuer: {
-            fontWeight: 600,
-        },
-        buttonRow: {
-            display: "flex",
-            gap: "8px",
-        },
-        confirmButton: {
-            flex: 1,
-            padding: "10px 16px",
-            fontSize: "14px",
-            fontWeight: 600,
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-        },
-        saveButton: {
-            backgroundColor: colors.accent,
-            color: "#FFFFFF",
-        },
-        skipButton: {
-            backgroundColor: colors.stroke,
-            color: colors.textPrimary,
-        },
-        savedMessage: {
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "8px",
-            padding: "16px",
-            color: colors.success,
-            fontSize: "14px",
-            fontWeight: 600,
-        },
     };
 
-    // Render confirmation view
-    if (view === "confirm" && selectedCode) {
-        if (saved) {
-            return (
-                <div ref={dropdownRef} style={styles.dropdown}>
-                    <div style={styles.header}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                            <rect width="24" height="24" rx="5.25" fill={colors.accent} />
-                            <path d="M6.75 10.5C4.13 9.94 1.69 10.5 1.69 12C1.69 13.5 4.13 14.06 6.75 13.5Z" fill="#F7A325" />
-                            <path d="M11.25 10.31H21A.75.75 0 0 1 21.75 11.06V12.56A.75.75 0 0 1 21 13.31H20.25V15.75A.56.56 0 0 1 19.69 16.31H18.56A.56.56 0 0 1 18 15.75V13.31H16.88V14.81A.56.56 0 0 1 16.31 15.38H15.19A.56.56 0 0 1 14.63 14.81V13.31H11.25Z" fill="#FFF6E0" />
-                            <circle cx="9" cy="11.81" r="5.06" fill="#FFF6E0" />
-                            <circle cx="9.38" cy="10.31" r="0.94" fill="#0A5048" />
-                        </svg>
-                        <span style={styles.headerText}>Duckey</span>
-                    </div>
-                    <div style={styles.savedMessage}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                            <path
-                                d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"
-                                fill={colors.success}
-                            />
-                        </svg>
-                        Mapping saved!
-                    </div>
-                </div>
-            );
-        }
-
+    // Render search view: advise user to use the toolbar extension icon for full vault search
+    if (view === "search") {
         return (
             <div ref={dropdownRef} style={styles.dropdown}>
                 <div style={styles.header}>
@@ -411,70 +285,14 @@ const Dropdown: React.FC<DropdownProps> = ({
                         onMouseDown={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            setView("search");
+                            setView("matches");
                         }}
-                        title="Back to search"
+                        title="Back to matches"
                     >
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
                         </svg>
                     </button>
-                    <span style={styles.headerText}>Save Mapping?</span>
-                </div>
-                <div style={styles.confirmContainer}>
-                    <p style={styles.confirmText}>
-                        Remember <span style={styles.confirmIssuer}>{selectedCode.issuer}</span> for{" "}
-                        <span style={styles.confirmDomain}>{domain}</span>?
-                    </p>
-                    <div style={styles.buttonRow}>
-                        <button
-                            style={{ ...styles.confirmButton, ...styles.skipButton }}
-                            onMouseDown={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleConfirmFill(false);
-                            }}
-                            disabled={saving}
-                        >
-                            Just fill
-                        </button>
-                        <button
-                            style={{ ...styles.confirmButton, ...styles.saveButton }}
-                            onMouseDown={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleConfirmFill(true);
-                            }}
-                            disabled={saving}
-                        >
-                            {saving ? "Saving..." : "Save & fill"}
-                        </button>
-                    </div>
-                </div>
-            </div>
-        );
-    }
-
-    // Render search view
-    if (view === "search") {
-        return (
-            <div ref={dropdownRef} style={styles.dropdown}>
-                <div style={styles.header}>
-                    {matches.length > 0 && (
-                        <button
-                            style={styles.backButton}
-                            onMouseDown={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setView("matches");
-                            }}
-                            title="Back to matches"
-                        >
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
-                            </svg>
-                        </button>
-                    )}
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                         <rect width="24" height="24" rx="5.25" fill={colors.accent} />
                         <path d="M6.75 10.5C4.13 9.94 1.69 10.5 1.69 12C1.69 13.5 4.13 14.06 6.75 13.5Z" fill="#F7A325" />
@@ -482,62 +300,26 @@ const Dropdown: React.FC<DropdownProps> = ({
                         <circle cx="9" cy="11.81" r="5.06" fill="#FFF6E0" />
                         <circle cx="9.38" cy="10.31" r="0.94" fill="#0A5048" />
                     </svg>
-                    <span style={styles.headerText}>Search All Codes</span>
+                    <span style={styles.headerText}>Duckey Vault</span>
                 </div>
-                <div style={styles.searchContainer}>
-                    <input
-                        ref={searchInputRef}
-                        type="text"
-                        placeholder="Search by name or account..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        style={styles.searchInput}
-                    />
-                </div>
-                <div style={styles.list}>
-                    {displayCodes.length === 0 ? (
-                        <div style={styles.empty}>
-                            {allCodes.length === 0 ? "Loading codes..." : "No codes found"}
-                        </div>
-                    ) : (
-                        displayCodes.map((code) => (
-                            <div
-                                key={code.id}
-                                style={styles.item}
-                                onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    handleSelectCode(code);
-                                }}
-                                onMouseEnter={(e) => {
-                                    (e.currentTarget as HTMLDivElement).style.backgroundColor = colors.backgroundHover;
-                                }}
-                                onMouseLeave={(e) => {
-                                    (e.currentTarget as HTMLDivElement).style.backgroundColor = "transparent";
-                                }}
-                            >
-                                <div style={styles.itemInfo}>
-                                    <div style={styles.issuer}>{code.issuer}</div>
-                                    {code.account && (
-                                        <div style={styles.account}>{code.account}</div>
-                                    )}
-                                </div>
-                                <div style={styles.otpContainer}>
-                                    <div style={styles.otp}>
-                                        {prettyFormatCode(otps.get(code.id) || "")}
-                                    </div>
-                                    <div style={styles.progressBarContainer}>
-                                        <div
-                                            style={{
-                                                ...styles.progressBar,
-                                                width: `${(progress.get(code.id) || 0) * 100}%`,
-                                            }}
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-                        ))
-                    )}
+                <div style={styles.infoContainer}>
+                    <p style={styles.infoTitle}>Vault search in browser toolbar</p>
+                    <p style={styles.infoText}>
+                        To protect your secrets, searching your entire vault is only available through the Duckey extension icon in your browser toolbar.
+                    </p>
+                    <p style={{ ...styles.infoText, fontSize: "12px", color: colors.textFaint }}>
+                        Click the Duckey icon in your browser toolbar to search, view, or copy any 2FA code.
+                    </p>
+                    <button
+                        style={styles.gotItButton}
+                        onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onClose();
+                        }}
+                    >
+                        Got it
+                    </button>
                 </div>
             </div>
         );
@@ -557,18 +339,22 @@ const Dropdown: React.FC<DropdownProps> = ({
                 <span style={styles.headerText}>Duckey</span>
             </div>
             <div style={styles.list}>
-                {matches.length === 0 ? (
-                    <div style={styles.empty}>No matching codes found</div>
+                {currentMatches.length === 0 ? (
+                    <div style={styles.empty}>
+                        <div style={{ marginBottom: "6px" }}>No matching codes found</div>
+                        <div style={{ fontSize: "12px", color: colors.textMuted }}>
+                            Click the Duckey toolbar icon to view all codes
+                        </div>
+                    </div>
                 ) : (
-                    matches.map(({ code }) => (
+                    currentMatches.map((match) => (
                         <div
-                            key={code.id}
+                            key={match.id}
                             style={styles.item}
                             onMouseDown={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                const otp = otps.get(code.id) || "";
-                                onFill(otp);
+                                onFill(match.otp);
                             }}
                             onMouseEnter={(e) => {
                                 (e.currentTarget as HTMLDivElement).style.backgroundColor = colors.backgroundHover;
@@ -578,20 +364,20 @@ const Dropdown: React.FC<DropdownProps> = ({
                             }}
                         >
                             <div style={styles.itemInfo}>
-                                <div style={styles.issuer}>{code.issuer}</div>
-                                {code.account && (
-                                    <div style={styles.account}>{code.account}</div>
+                                <div style={styles.issuer}>{match.issuer}</div>
+                                {match.account && (
+                                    <div style={styles.account}>{match.account}</div>
                                 )}
                             </div>
                             <div style={styles.otpContainer}>
                                 <div style={styles.otp}>
-                                    {prettyFormatCode(otps.get(code.id) || "")}
+                                    {prettyFormatCode(match.otp)}
                                 </div>
                                 <div style={styles.progressBarContainer}>
                                     <div
                                         style={{
                                             ...styles.progressBar,
-                                            width: `${(progress.get(code.id) || 0) * 100}%`,
+                                            width: `${(progressMap.get(match.id) ?? match.progress) * 100}%`,
                                         }}
                                     />
                                 </div>
@@ -600,7 +386,7 @@ const Dropdown: React.FC<DropdownProps> = ({
                     ))
                 )}
             </div>
-            {matches.length === 0 && (
+            {currentMatches.length === 0 && (
                 <button
                     style={styles.searchAllButton}
                     onMouseDown={(e) => {
@@ -826,7 +612,7 @@ const AuthPromptDropdown: React.FC<AuthPromptDropdownProps> = ({
 };
 
 interface AutofillIconProps {
-    matches: DomainMatch[];
+    matches: AutofillMatch[];
     timeOffset: number;
     onFill: (code: string, userInitiated?: boolean) => void;
     inputElement: HTMLInputElement;
@@ -874,14 +660,14 @@ const AutofillIcon: React.FC<AutofillIconProps> = ({
     // Auto-fill if single match and setting enabled
     useEffect(() => {
         if (isAuthenticated && autoFillSingleMatch && matches.length === 1) {
-            const { code } = matches[0]!;
-            const [otp] = generateOTPs(code, timeOffset);
+            const match = matches[0]!;
+            const otp = match.otp;
             // Small delay to let the UI render
             setTimeout(() => {
                 onFill(otp, false);
             }, 100);
         }
-    }, [matches, timeOffset, onFill, autoFillSingleMatch, isAuthenticated]);
+    }, [matches, onFill, autoFillSingleMatch, isAuthenticated]);
 
     const handleIconClick = (e: React.MouseEvent) => {
         e.preventDefault();
@@ -1018,7 +804,7 @@ const positionIcon = (
  * Show the autofill icon next to an input field.
  */
 export const showPopup = (
-    matches: DomainMatch[],
+    matches: AutofillMatch[],
     timeOffset: number,
     onFill: (code: string, userInitiated?: boolean) => void,
     inputElement?: HTMLInputElement,
