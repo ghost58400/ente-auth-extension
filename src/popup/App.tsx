@@ -6,7 +6,7 @@ import { browser, sendMessage, openOptionsPage, getCurrentTab } from "@shared/br
 import { searchCodes, matchCodesToDomain, setCustomMappings } from "@shared/domain-matcher";
 import { generateOTPs } from "@shared/otp";
 import { useTheme } from "@shared/useTheme";
-import type { AuthState, Code, CodeFormData, CustomDomainMapping, ParsedQRCode, PendingSearchContext } from "@shared/types";
+import type { AuthState, Code, CodeFormData, CustomDomainMapping, ParsedQRCode } from "@shared/types";
 import { CodeCard } from "./CodeCard";
 import { CodeForm } from "./CodeForm";
 
@@ -88,7 +88,6 @@ export const App: React.FC = () => {
     const [exitingPinId, setExitingPinId] = useState<string | null>(null);
     const [canScrollLeft, setCanScrollLeft] = useState(false);
     const [canScrollRight, setCanScrollRight] = useState(false);
-    const [pendingSearch, setPendingSearch] = useState<PendingSearchContext | null>(null);
     const [activeTabContext, setActiveTabContext] = useState<{ tabId: number; domain: string } | null>(null);
     const [mappingPrompt, setMappingPrompt] = useState<{ domain: string; issuer: string } | null>(null);
     const [mappingSaved, setMappingSaved] = useState(false);
@@ -181,22 +180,10 @@ export const App: React.FC = () => {
                 console.debug("[Duckey] Could not load custom mappings:", e);
             }
 
-            // Check for pending search requested from in-page autofill dropdown
+            // Open search input automatically if requested via URL param (e.g. from in-page trigger)
             const urlParams = new URLSearchParams(window.location.search);
-            const isUrlSearch = urlParams.get("search") === "true";
-            try {
-                const pendingRes = await sendMessage<{
-                    success: boolean;
-                    data?: PendingSearchContext | null;
-                }>({ type: "GET_PENDING_SEARCH" });
-                if (pendingRes.success && pendingRes.data) {
-                    setShowSearch(true);
-                    setPendingSearch(pendingRes.data);
-                } else if (isUrlSearch) {
-                    setShowSearch(true);
-                }
-            } catch (err) {
-                if (isUrlSearch) setShowSearch(true);
+            if (urlParams.get("search") === "true") {
+                setShowSearch(true);
             }
 
             // Step 1: Try to load cached codes immediately (no service worker needed)
@@ -422,11 +409,10 @@ export const App: React.FC = () => {
 
     // Handle code selection/click from code card
     const handleCodeSelect = async (code: Code, currentOtp: string) => {
-        const targetContext = pendingSearch || activeTabContext;
-        if (targetContext && targetContext.tabId !== null) {
+        if (activeTabContext && activeTabContext.tabId !== null) {
             let filled = false;
             try {
-                const fillRes = await browser.tabs.sendMessage(targetContext.tabId, {
+                const fillRes = await browser.tabs.sendMessage(activeTabContext.tabId, {
                     type: "FILL_OTP",
                     code: currentOtp,
                 }) as { success?: boolean } | undefined;
@@ -437,22 +423,18 @@ export const App: React.FC = () => {
                 console.debug("[Duckey] Could not fill OTP into tab:", e);
             }
 
-            if (targetContext.domain) {
+            if (activeTabContext.domain) {
                 // Check if this domain is already recognized for this code
-                const matches = matchCodesToDomain(codes, targetContext.domain);
+                const matches = matchCodesToDomain(codes, activeTabContext.domain);
                 const isAlreadyMatched = matches.some((m) => m.code.id === code.id);
 
-                // Offer to save mapping if it was not already recognized,
-                // and either the field was successfully filled or search was explicitly requested
-                if (!isAlreadyMatched && (filled || pendingSearch !== null)) {
+                // Offer to save mapping if it was not already recognized and field was filled
+                if (!isAlreadyMatched && filled) {
                     setMappingSaved(false);
                     setMappingPrompt({
-                        domain: targetContext.domain,
-                        issuer: code.issuer || code.account || targetContext.domain,
+                        domain: activeTabContext.domain,
+                        issuer: code.issuer || code.account || activeTabContext.domain,
                     });
-                } else if (pendingSearch) {
-                    setPendingSearch(null);
-                    sendMessage({ type: "CLEAR_PENDING_SEARCH" });
                 }
             }
         }
@@ -1369,8 +1351,6 @@ export const App: React.FC = () => {
                                 className="mapping-close-btn"
                                 onClick={() => {
                                     setMappingPrompt(null);
-                                    setPendingSearch(null);
-                                    sendMessage({ type: "CLEAR_PENDING_SEARCH" });
                                 }}
                                 title="Dismiss"
                             >
@@ -1415,8 +1395,6 @@ export const App: React.FC = () => {
                                             setMappingSaved(true);
                                             setTimeout(() => {
                                                 setMappingPrompt(null);
-                                                setPendingSearch(null);
-                                                sendMessage({ type: "CLEAR_PENDING_SEARCH" });
                                             }, 1200);
                                         } catch (e) {
                                             console.error("Failed to add mapping:", e);

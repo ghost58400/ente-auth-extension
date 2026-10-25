@@ -35,8 +35,6 @@ const themeColors = {
     },
 };
 
-type DropdownView = "matches" | "search";
-
 interface DropdownProps {
     matches: AutofillMatch[];
     timeOffset: number;
@@ -57,7 +55,6 @@ const Dropdown: React.FC<DropdownProps> = ({
 }) => {
     const [currentMatches, setCurrentMatches] = useState<AutofillMatch[]>(matches);
     const [progressMap, setProgressMap] = useState<Map<string, number>>(new Map());
-    const [view, setView] = useState<DropdownView>("matches");
     const dropdownRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -150,46 +147,6 @@ const Dropdown: React.FC<DropdownProps> = ({
             color: colors.textPrimary,
             flex: 1,
         },
-        backButton: {
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            padding: "4px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: colors.textMuted,
-        },
-        infoContainer: {
-            padding: "16px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "12px",
-        },
-        infoTitle: {
-            fontSize: "14px",
-            fontWeight: 600,
-            color: colors.textPrimary,
-            margin: 0,
-        },
-        infoText: {
-            fontSize: "13px",
-            color: colors.textMuted,
-            lineHeight: 1.5,
-            margin: 0,
-        },
-        gotItButton: {
-            width: "100%",
-            padding: "10px 16px",
-            fontSize: "14px",
-            fontWeight: 600,
-            color: "#FFFFFF",
-            backgroundColor: colors.accent,
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-            marginTop: "4px",
-        },
         list: {
             maxHeight: "280px",
             overflowY: "auto",
@@ -275,60 +232,6 @@ const Dropdown: React.FC<DropdownProps> = ({
         },
     };
 
-    // Render search view: advise user to use the toolbar extension icon for full vault search
-    if (view === "search") {
-        return (
-            <div ref={dropdownRef} style={styles.dropdown}>
-                <div style={styles.header}>
-                    <button
-                        style={styles.backButton}
-                        onMouseDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setView("matches");
-                        }}
-                        title="Back to matches"
-                    >
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
-                        </svg>
-                    </button>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                        <rect width="24" height="24" rx="5.25" fill={colors.accent} />
-                        <path d="M6.75 10.5C4.13 9.94 1.69 10.5 1.69 12C1.69 13.5 4.13 14.06 6.75 13.5Z" fill="#F7A325" />
-                        <path d="M11.25 10.31H21A.75.75 0 0 1 21.75 11.06V12.56A.75.75 0 0 1 21 13.31H20.25V15.75A.56.56 0 0 1 19.69 16.31H18.56A.56.56 0 0 1 18 15.75V13.31H16.88V14.81A.56.56 0 0 1 16.31 15.38H15.19A.56.56 0 0 1 14.63 14.81V13.31H11.25Z" fill="#FFF6E0" />
-                        <circle cx="9" cy="11.81" r="5.06" fill="#FFF6E0" />
-                        <circle cx="9.38" cy="10.31" r="0.94" fill="#0A5048" />
-                    </svg>
-                    <span style={styles.headerText}>Duckey Vault</span>
-                </div>
-                <div style={styles.infoContainer}>
-                    <p style={styles.infoTitle}>Vault search in browser toolbar</p>
-                    <p style={styles.infoText}>
-                        To protect your secrets, searching your entire vault is only available through the Duckey extension icon in your browser toolbar.
-                    </p>
-                    <p style={{ ...styles.infoText, fontSize: "12px", color: colors.textFaint }}>
-                        Click the Duckey icon in your browser toolbar to search, view, or copy any 2FA code.
-                    </p>
-                    <button
-                        style={styles.gotItButton}
-                        onMouseDown={async (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            try {
-                                await sendMessage({ type: "OPEN_SEARCH_IN_POPUP" });
-                            } catch {}
-                            onClose();
-                        }}
-                    >
-                        Open Duckey search
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
-    // Render matches view (default)
     return (
         <div ref={dropdownRef} style={styles.dropdown}>
             <div style={styles.header}>
@@ -397,10 +300,10 @@ const Dropdown: React.FC<DropdownProps> = ({
                         e.stopPropagation();
                         try {
                             await sendMessage({ type: "OPEN_SEARCH_IN_POPUP" });
-                            onClose();
                         } catch (err) {
                             console.warn("[Duckey] Failed to open popup directly:", err);
-                            setView("search");
+                        } finally {
+                            onClose();
                         }
                     }}
                 >

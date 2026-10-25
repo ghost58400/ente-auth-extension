@@ -13,7 +13,6 @@ import type {
     AutofillMatch,
     ExtensionMessage,
     ExtensionResponse,
-    PendingSearchContext,
 } from "@shared/types";
 import { getAuthState, login, lock, logout, unlock, setPin, removePin, unlockWithPin } from "./auth";
 import { settingsStorage, authStorage, customMappingsStorage, sessionStore } from "./storage";
@@ -33,26 +32,14 @@ const AUTH_CHANGING_MESSAGES = new Set<string>([
     "LOGOUT",
 ]);
 
-// Messages that can only be called from privileged extension contexts
-// (popup, options page, login tab) and must NOT be accessible to content scripts.
-const SENSITIVE_MESSAGE_TYPES = new Set<string>([
-    "GET_CODES",
-    "SET_SETTINGS",
-    "CREATE_CODE",
-    "UPDATE_CODE",
-    "DELETE_CODE",
-    "LOGIN",
-    "LOGIN_COMPLETE",
-    "SET_PIN",
-    "REMOVE_PIN",
-    "LOGOUT",
-    "SCAN_QR_FROM_PAGE",
-    "ADD_CUSTOM_MAPPING",
-    "DELETE_CUSTOM_MAPPING",
+// Whitelist of messages that unprivileged content scripts are allowed to send.
+// All other messages are strictly restricted to privileged extension contexts (Default Deny).
+const PUBLIC_CONTENT_SCRIPT_MESSAGES = new Set<string>([
+    "GET_AUTH_STATE",
+    "GET_SETTINGS",
+    "GET_CODES_FOR_DOMAIN",
+    "OPEN_SEARCH_IN_POPUP",
 ]);
-
-// Ephemeral pending search context when initiated from an in-page autofill dropdown
-let pendingAutofillSearch: PendingSearchContext | null = null;
 
 /**
  * Tell content scripts in every tab that auth state changed. They can't rely on
@@ -145,15 +132,13 @@ const isPrivilegedSender = (sender: Browser.Runtime.MessageSender): boolean => {
     if (sender.id !== browser.runtime.id) {
         return false;
     }
-    // Extension toolbar popup or background: sender.tab is undefined
-    if (sender.tab === undefined) {
+    const url = sender.url || sender.tab?.url;
+    const extensionOrigin = browser.runtime.getURL("");
+    if (url && url.startsWith(extensionOrigin)) {
         return true;
     }
-    // Extension pages in tabs (options, login): URL starts with extension scheme
-    if (
-        sender.url?.startsWith("chrome-extension://") ||
-        sender.url?.startsWith("moz-extension://")
-    ) {
+    // Extension toolbar popup or background where sender.tab is undefined
+    if (sender.tab === undefined && (!url || url.startsWith("chrome-extension://") || url.startsWith("moz-extension://"))) {
         return true;
     }
     return false;
@@ -191,9 +176,9 @@ const handleMessage = async (
         return { success: false, error: "Unauthorized" };
     }
 
-    // Deny content scripts from calling sensitive messages
-    if (SENSITIVE_MESSAGE_TYPES.has(message.type) && !isPrivilegedSender(sender)) {
-        console.warn(`Denied sensitive message ${message.type} from unprivileged sender:`, sender.url);
+    // Enforce default deny: content scripts can ONLY call whitelisted public messages
+    if (!isPrivilegedSender(sender) && !PUBLIC_CONTENT_SCRIPT_MESSAGES.has(message.type)) {
+        console.warn(`Denied message ${message.type} from unprivileged sender:`, sender.url);
         return { success: false, error: "Unauthorized" };
     }
 
@@ -254,27 +239,9 @@ const handleMessage = async (
 
         case "OPEN_SEARCH_IN_POPUP": {
             try {
-                let domain = "";
-                const rawUrl = sender.tab?.url || sender.url;
-                if (rawUrl) {
-                    try {
-                        domain = new URL(rawUrl).hostname;
-                    } catch {
-                        domain = "";
-                    }
-                }
-                const tabId = sender.tab?.id ?? null;
                 const windowId = sender.tab?.windowId;
-
-                const pendingContext: PendingSearchContext = {
-                    domain,
-                    tabId,
-                    timestamp: Date.now(),
-                };
-                pendingAutofillSearch = pendingContext;
-                await sessionStore.set("pendingAutofillSearch", pendingContext);
-
                 let opened = false;
+
                 // 1. Try Chrome MV3 chrome.action.openPopup
                 if (typeof chrome !== "undefined" && chrome.action && typeof chrome.action.openPopup === "function") {
                     try {
@@ -313,7 +280,6 @@ const handleMessage = async (
                             height: 520,
                             focused: true,
                         });
-                        opened = true;
                     } catch (winError) {
                         console.warn("[Duckey] windows.create failed, falling back to tab:", winError);
                         await browser.tabs.create({
@@ -326,23 +292,9 @@ const handleMessage = async (
             } catch (e) {
                 return {
                     success: false,
-                    error: e instanceof Error ? e.message : "Failed to open search in popup",
+                    error: e instanceof Error ? e.message : "Failed to open popup",
                 };
             }
-        }
-
-        case "GET_PENDING_SEARCH": {
-            const pending = pendingAutofillSearch || (await sessionStore.get<PendingSearchContext>("pendingAutofillSearch"));
-            if (pending && Date.now() - pending.timestamp < 120000) {
-                return { success: true, data: pending };
-            }
-            return { success: true, data: null };
-        }
-
-        case "CLEAR_PENDING_SEARCH": {
-            pendingAutofillSearch = null;
-            await sessionStore.remove("pendingAutofillSearch");
-            return { success: true };
         }
 
         case "UNLOCK": {
@@ -393,10 +345,6 @@ const handleMessage = async (
                 } catch {
                     domain = "";
                 }
-            }
-            // Allow privileged extension pages to specify domain explicitly
-            if (!domain && isPrivilegedSender(sender)) {
-                domain = message.domain || "";
             }
 
             if (!domain) {
