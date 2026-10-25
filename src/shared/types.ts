@@ -174,7 +174,20 @@ export type ExtensionMessage =
     | { type: "CREATE_CODE"; code: CodeFormData }
     | { type: "UPDATE_CODE"; id: string; code: CodeFormData }
     | { type: "DELETE_CODE"; id: string }
-    | { type: "SCAN_QR_FROM_PAGE" };
+    | { type: "SCAN_QR_FROM_PAGE" }
+    | { type: "OPEN_SEARCH_IN_POPUP" }
+    | { type: "GET_PENDING_SEARCH" }
+    | { type: "CLEAR_PENDING_SEARCH" }
+    | { type: "FILL_OTP"; code: string };
+
+/**
+ * Context saved when the in-page dropdown triggers full vault search in popup.
+ */
+export interface PendingSearchContext {
+    domain: string;
+    tabId: number | null;
+    timestamp: number;
+}
 
 /**
  * Response types for extension messages.

@@ -6,7 +6,7 @@ import { browser, sendMessage, openOptionsPage } from "@shared/browser";
 import { searchCodes } from "@shared/domain-matcher";
 import { generateOTPs } from "@shared/otp";
 import { useTheme } from "@shared/useTheme";
-import type { AuthState, Code, CodeFormData, ParsedQRCode } from "@shared/types";
+import type { AuthState, Code, CodeFormData, ParsedQRCode, PendingSearchContext } from "@shared/types";
 import { CodeCard } from "./CodeCard";
 import { CodeForm } from "./CodeForm";
 
@@ -88,6 +88,9 @@ export const App: React.FC = () => {
     const [exitingPinId, setExitingPinId] = useState<string | null>(null);
     const [canScrollLeft, setCanScrollLeft] = useState(false);
     const [canScrollRight, setCanScrollRight] = useState(false);
+    const [pendingSearch, setPendingSearch] = useState<PendingSearchContext | null>(null);
+    const [mappingPrompt, setMappingPrompt] = useState<{ domain: string; issuer: string } | null>(null);
+    const [mappingSaved, setMappingSaved] = useState(false);
     const tagFilterRef = useRef<HTMLDivElement>(null);
 
     // Check if tag filter bar can scroll
@@ -125,6 +128,24 @@ export const App: React.FC = () => {
             }>({ type: "GET_SETTINGS" });
             if (settingsRes.success && settingsRes.data?.sortOrder) {
                 setSortOrder(settingsRes.data.sortOrder);
+            }
+
+            // Check for pending search requested from in-page autofill dropdown
+            const urlParams = new URLSearchParams(window.location.search);
+            const isUrlSearch = urlParams.get("search") === "true";
+            try {
+                const pendingRes = await sendMessage<{
+                    success: boolean;
+                    data?: PendingSearchContext | null;
+                }>({ type: "GET_PENDING_SEARCH" });
+                if (pendingRes.success && pendingRes.data) {
+                    setShowSearch(true);
+                    setPendingSearch(pendingRes.data);
+                } else if (isUrlSearch) {
+                    setShowSearch(true);
+                }
+            } catch (err) {
+                if (isUrlSearch) setShowSearch(true);
             }
 
             // Step 1: Try to load cached codes immediately (no service worker needed)
@@ -345,6 +366,27 @@ export const App: React.FC = () => {
             setError(e instanceof Error ? e.message : "Failed to unlock");
         } finally {
             setUnlocking(false);
+        }
+    };
+
+    // Handle code selection/click from code card
+    const handleCodeSelect = async (code: Code, currentOtp: string) => {
+        if (pendingSearch && pendingSearch.tabId !== null) {
+            try {
+                await browser.tabs.sendMessage(pendingSearch.tabId, {
+                    type: "FILL_OTP",
+                    code: currentOtp,
+                });
+            } catch (e) {
+                console.warn("[Duckey] Failed to fill OTP into tab:", e);
+            }
+
+            if (pendingSearch.domain) {
+                setMappingPrompt({
+                    domain: pendingSearch.domain,
+                    issuer: code.issuer,
+                });
+            }
         }
     };
 
@@ -986,6 +1028,22 @@ export const App: React.FC = () => {
                 </div>
             )}
 
+            {pendingSearch && (
+                <div className="search-context-badge">
+                    <span>Filling for <strong>{pendingSearch.domain}</strong></span>
+                    <button
+                        className="badge-close-btn"
+                        onClick={() => {
+                            setPendingSearch(null);
+                            sendMessage({ type: "CLEAR_PENDING_SEARCH" });
+                        }}
+                        title="Dismiss autofill context"
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
+
             {/* Tag filter bar */}
             {allTags.length > 0 && (
                 <div className="tag-filter-container">
@@ -1099,6 +1157,7 @@ export const App: React.FC = () => {
                                     nextOtp={otpData.nextOtp}
                                     onEdit={handleEditCode}
                                     onPin={handlePinCode}
+                                    onSelect={handleCodeSelect}
                                 />
                             </div>
                         );
@@ -1239,6 +1298,63 @@ export const App: React.FC = () => {
                             </button>
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* Mapping prompt banner */}
+            {mappingPrompt && (
+                <div className="mapping-prompt-banner">
+                    {mappingSaved ? (
+                        <div className="mapping-prompt-success">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+                            </svg>
+                            <span>Mapping saved for <strong>{mappingPrompt.domain}</strong>!</span>
+                        </div>
+                    ) : (
+                        <div className="mapping-prompt-card">
+                            <div className="mapping-prompt-text">
+                                Remember <strong>{mappingPrompt.issuer}</strong> for <strong>{mappingPrompt.domain}</strong>?
+                            </div>
+                            <div className="mapping-prompt-actions">
+                                <button
+                                    className="mapping-btn-secondary"
+                                    onClick={() => {
+                                        setMappingPrompt(null);
+                                        setPendingSearch(null);
+                                        sendMessage({ type: "CLEAR_PENDING_SEARCH" });
+                                    }}
+                                >
+                                    Just fill
+                                </button>
+                                <button
+                                    className="mapping-btn-primary"
+                                    onClick={async () => {
+                                        try {
+                                            await sendMessage({
+                                                type: "ADD_CUSTOM_MAPPING",
+                                                mapping: {
+                                                    domain: mappingPrompt.domain,
+                                                    issuer: mappingPrompt.issuer,
+                                                },
+                                            });
+                                            setMappingSaved(true);
+                                            setTimeout(() => {
+                                                setMappingPrompt(null);
+                                                setPendingSearch(null);
+                                                sendMessage({ type: "CLEAR_PENDING_SEARCH" });
+                                            }, 1200);
+                                        } catch (e) {
+                                            console.error("Failed to add mapping:", e);
+                                            setMappingPrompt(null);
+                                        }
+                                    }}
+                                >
+                                    Remember & fill
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

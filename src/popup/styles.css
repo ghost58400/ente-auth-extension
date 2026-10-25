@@ -1412,3 +1412,109 @@ body {
 .scan-error-toast button:hover {
     opacity: 1;
 }
+
+/* Search context badge */
+.search-context-badge {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 14px;
+    background-color: var(--background-paper);
+    border-bottom: 1px solid var(--stroke);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.search-context-badge strong {
+    color: var(--text-primary);
+}
+
+.search-context-badge .badge-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.search-context-badge .badge-close-btn:hover {
+    color: var(--text-primary);
+}
+
+/* Mapping prompt banner */
+.mapping-prompt-banner {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    right: 16px;
+    background-color: var(--background-paper);
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    padding: 12px 14px;
+    z-index: 100;
+    animation: slideUp 0.2s ease;
+}
+
+.mapping-prompt-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.mapping-prompt-text {
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+
+.mapping-prompt-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.mapping-btn-secondary {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    background-color: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--stroke);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.mapping-btn-secondary:hover {
+    background-color: var(--fill-faint);
+    color: var(--text-primary);
+}
+
+.mapping-btn-primary {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    background-color: var(--accent);
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.15s, opacity 0.15s;
+}
+
+.mapping-btn-primary:hover {
+    background-color: var(--accent-hover);
+}
+
+.mapping-prompt-success {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--success-green);
+    padding: 4px 0;
+}

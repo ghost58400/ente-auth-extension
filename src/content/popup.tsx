@@ -312,13 +312,16 @@ const Dropdown: React.FC<DropdownProps> = ({
                     </p>
                     <button
                         style={styles.gotItButton}
-                        onMouseDown={(e) => {
+                        onMouseDown={async (e) => {
                             e.preventDefault();
                             e.stopPropagation();
+                            try {
+                                await sendMessage({ type: "OPEN_SEARCH_IN_POPUP" });
+                            } catch {}
                             onClose();
                         }}
                     >
-                        Got it
+                        Open Duckey search
                     </button>
                 </div>
             </div>
@@ -389,10 +392,16 @@ const Dropdown: React.FC<DropdownProps> = ({
             {currentMatches.length === 0 && (
                 <button
                     style={styles.searchAllButton}
-                    onMouseDown={(e) => {
+                    onMouseDown={async (e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        setView("search");
+                        try {
+                            await sendMessage({ type: "OPEN_SEARCH_IN_POPUP" });
+                            onClose();
+                        } catch (err) {
+                            console.warn("[Duckey] Failed to open popup directly:", err);
+                            setView("search");
+                        }
                     }}
                 >
                     Search all codes

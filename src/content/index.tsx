@@ -183,9 +183,23 @@ const handleMessage = (
     sendResponse: (response: unknown) => void
 ): boolean => {
     const msg = message as { type?: string; code?: string };
-    if (msg.type === "FILL_OTP" && msg.code && currentDetection) {
-        fillCode(currentDetection, msg.code);
-        sendResponse({ success: true });
+    if (msg.type === "FILL_OTP" && msg.code) {
+        const detection = currentDetection || getBestMFAField();
+        if (detection) {
+            fillCode(detection, msg.code, true, true);
+            sendResponse({ success: true });
+        } else {
+            const activeEl = document.activeElement as HTMLInputElement | null;
+            if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+                activeEl.value = msg.code;
+                activeEl.dispatchEvent(new Event("input", { bubbles: true }));
+                activeEl.dispatchEvent(new Event("change", { bubbles: true }));
+                sendResponse({ success: true });
+            } else {
+                sendResponse({ success: false, error: "No target field found" });
+            }
+        }
+        return false;
     } else if (msg.type === "AUTH_STATE_CHANGED") {
         // Sent by the background on login / unlock / lock / logout (issue #22)
         refreshIcon();

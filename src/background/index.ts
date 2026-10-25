@@ -13,9 +13,10 @@ import type {
     AutofillMatch,
     ExtensionMessage,
     ExtensionResponse,
+    PendingSearchContext,
 } from "@shared/types";
 import { getAuthState, login, lock, logout, unlock, setPin, removePin, unlockWithPin } from "./auth";
-import { settingsStorage, authStorage, customMappingsStorage } from "./storage";
+import { settingsStorage, authStorage, customMappingsStorage, sessionStore } from "./storage";
 import { getCodes, getTimeOffset, syncCodes, createCode, updateCode, deleteCode } from "./sync";
 import { scanQRFromPage } from "./qr-scanner";
 
@@ -46,7 +47,12 @@ const SENSITIVE_MESSAGE_TYPES = new Set<string>([
     "REMOVE_PIN",
     "LOGOUT",
     "SCAN_QR_FROM_PAGE",
+    "ADD_CUSTOM_MAPPING",
+    "DELETE_CUSTOM_MAPPING",
 ]);
+
+// Ephemeral pending search context when initiated from an in-page autofill dropdown
+let pendingAutofillSearch: PendingSearchContext | null = null;
 
 /**
  * Tell content scripts in every tab that auth state changed. They can't rely on
@@ -244,6 +250,99 @@ const handleMessage = async (
                     error: e instanceof Error ? e.message : "Failed to open login page",
                 };
             }
+        }
+
+        case "OPEN_SEARCH_IN_POPUP": {
+            try {
+                let domain = "";
+                const rawUrl = sender.tab?.url || sender.url;
+                if (rawUrl) {
+                    try {
+                        domain = new URL(rawUrl).hostname;
+                    } catch {
+                        domain = "";
+                    }
+                }
+                const tabId = sender.tab?.id ?? null;
+                const windowId = sender.tab?.windowId;
+
+                const pendingContext: PendingSearchContext = {
+                    domain,
+                    tabId,
+                    timestamp: Date.now(),
+                };
+                pendingAutofillSearch = pendingContext;
+                await sessionStore.set("pendingAutofillSearch", pendingContext);
+
+                let opened = false;
+                // 1. Try Chrome MV3 chrome.action.openPopup
+                if (typeof chrome !== "undefined" && chrome.action && typeof chrome.action.openPopup === "function") {
+                    try {
+                        if (windowId !== undefined) {
+                            await chrome.action.openPopup({ windowId });
+                        } else {
+                            await chrome.action.openPopup();
+                        }
+                        opened = true;
+                    } catch (e) {
+                        console.warn("[Duckey] chrome.action.openPopup failed:", e);
+                    }
+                }
+
+                // 2. Try Firefox MV2 browser.browserAction.openPopup
+                if (!opened && browser.browserAction && typeof (browser.browserAction as { openPopup?: (options?: { windowId?: number }) => Promise<void> }).openPopup === "function") {
+                    try {
+                        if (windowId !== undefined) {
+                            await (browser.browserAction as { openPopup: (options?: { windowId?: number }) => Promise<void> }).openPopup({ windowId });
+                        } else {
+                            await (browser.browserAction as { openPopup: () => Promise<void> }).openPopup();
+                        }
+                        opened = true;
+                    } catch (e) {
+                        console.warn("[Duckey] browserAction.openPopup failed:", e);
+                    }
+                }
+
+                // 3. Fallback: Open as a compact popup window
+                if (!opened) {
+                    try {
+                        await browser.windows.create({
+                            url: browser.runtime.getURL("popup/index.html?search=true"),
+                            type: "popup",
+                            width: 380,
+                            height: 520,
+                            focused: true,
+                        });
+                        opened = true;
+                    } catch (winError) {
+                        console.warn("[Duckey] windows.create failed, falling back to tab:", winError);
+                        await browser.tabs.create({
+                            url: browser.runtime.getURL("popup/index.html?search=true"),
+                        });
+                    }
+                }
+
+                return { success: true };
+            } catch (e) {
+                return {
+                    success: false,
+                    error: e instanceof Error ? e.message : "Failed to open search in popup",
+                };
+            }
+        }
+
+        case "GET_PENDING_SEARCH": {
+            const pending = pendingAutofillSearch || (await sessionStore.get<PendingSearchContext>("pendingAutofillSearch"));
+            if (pending && Date.now() - pending.timestamp < 120000) {
+                return { success: true, data: pending };
+            }
+            return { success: true, data: null };
+        }
+
+        case "CLEAR_PENDING_SEARCH": {
+            pendingAutofillSearch = null;
+            await sessionStore.remove("pendingAutofillSearch");
+            return { success: true };
         }
 
         case "UNLOCK": {
